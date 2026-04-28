@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Autonomous Agent</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Space+Mono&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0a0a0a;
+      --surface: #111;
+      --border: #222;
+      --green: #00ff88;
+      --yellow: #ffd700;
+      --blue: #4fc3f7;
+      --red: #ff5555;
+      --dim: #444;
+      --text: #ccc;
+      --font: 'JetBrains Mono', monospace;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--surface);
+    }
+
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .dot.red   { background: #ff5f57; }
+    .dot.yellow{ background: #febc2e; }
+    .dot.green { background: #28c840; }
+
+    .title {
+      margin-left: 8px;
+      color: var(--dim);
+      font-size: 12px;
+      letter-spacing: 0.05em;
+    }
+
+    .status-dot {
+      margin-left: auto;
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 6px var(--green);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    #log {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .line {
+      display: flex;
+      gap: 10px;
+      line-height: 1.6;
+      animation: fadein 0.2s ease;
+    }
+
+    @keyframes fadein {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .prefix { flex-shrink: 0; }
+
+    .line.system  .prefix { color: var(--dim); }
+    .line.user    .prefix { color: var(--green); }
+    .line.tool    .prefix { color: var(--yellow); }
+    .line.result  .prefix { color: var(--blue); }
+    .line.final   .prefix { color: var(--green); }
+    .line.error   .prefix { color: var(--red); }
+    .line.system  .body   { color: var(--dim); }
+    .line.user    .body   { color: #eee; }
+    .line.tool    .body   { color: var(--yellow); }
+    .line.result  .body   { color: var(--blue); }
+    .line.final   .body   { color: #eee; white-space: pre-wrap; }
+    .line.error   .body   { color: var(--red); }
+
+    .body { word-break: break-word; }
+
+    .tag {
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 2px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      margin-right: 6px;
+    }
+
+    .tag.call   { background: #3a2f00; color: var(--yellow); border: 1px solid #5a4a00; }
+    .tag.result { background: #001a2e; color: var(--blue);   border: 1px solid #003355; }
+
+    #input-row {
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      align-items: center;
+      padding: 12px 20px;
+      gap: 10px;
+    }
+
+    .prompt-symbol { color: var(--green); font-weight: 700; user-select: none; }
+
+    #goal-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: #eee;
+      font-family: var(--font);
+      font-size: 13px;
+      caret-color: var(--green);
+    }
+
+    #goal-input::placeholder { color: var(--dim); }
+
+    #run-btn {
+      background: var(--green);
+      color: #000;
+      border: none;
+      padding: 6px 18px;
+      font-family: var(--font);
+      font-size: 12px;
+      font-weight: 700;
+      border-radius: 3px;
+      cursor: pointer;
+      letter-spacing: 0.05em;
+      transition: opacity 0.15s;
+    }
+
+    #run-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+    #run-btn:hover:not(:disabled) { opacity: 0.85; }
+
+    #log::-webkit-scrollbar { width: 4px; }
+    #log::-webkit-scrollbar-track { background: transparent; }
+    #log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="dot red"></div>
+  <div class="dot yellow"></div>
+  <div class="dot green"></div>
+  <span class="title">autonomous-agent — bash</span>
+  <div class="status-dot" id="status-dot" title="Agent online"></div>
+</header>
+
+<div id="log">
+  <!-- lines injected here -->
+</div>
+
+<div id="input-row">
+  <span class="prompt-symbol">$</span>
+  <input id="goal-input" type="text" placeholder="Give the agent a goal..." autocomplete="off" spellcheck="false"/>
+  <button id="run-btn">RUN</button>
+</div>
+
+<script>
+  // ---- Config ----
+  // In dev, hit localhost. In HF Spaces, same origin.
+  const API_BASE = window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost"
+    ? "http://localhost:8000"
+    : "";
+
+  const log   = document.getElementById("log");
+  const input = document.getElementById("goal-input");
+  const btn   = document.getElementById("run-btn");
+  const dot   = document.getElementById("status-dot");
+
+  function addLine(type, prefixText, bodyHTML) {
+    const line = document.createElement("div");
+    line.className = `line ${type}`;
+
+    const prefix = document.createElement("span");
+    prefix.className = "prefix";
+    prefix.textContent = prefixText;
+
+    const body = document.createElement("span");
+    body.className = "body";
+    body.innerHTML = bodyHTML;
+
+    line.appendChild(prefix);
+    line.appendChild(body);
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+    return body; // return so we can update it (for streaming)
+  }
+
+  function escape(str) {
+    return String(str)
+      .replace(/&/g,"&amp;")
+      .replace(/</g,"&lt;")
+      .replace(/>/g,"&gt;");
+  }
+
+  function setRunning(running) {
+    btn.disabled = running;
+    input.disabled = running;
+    dot.style.background = running ? "#ffd700" : "var(--green)";
+    dot.style.boxShadow  = running ? "0 0 6px #ffd700" : "0 0 6px var(--green)";
+  }
+
+  // Startup message
+  addLine("system", "#", "Autonomous Agent ready. Type a goal and press RUN.");
+  addLine("system", "#", `API → ${API_BASE || "same origin"}`);
+
+  async function runAgent() {
+    const goal = input.value.trim();
+    if (!goal) return;
+
+    input.value = "";
+    setRunning(true);
+
+    addLine("user", "›", escape(goal));
+
+    let source;
+    try {
+      const resp = await fetch(`${API_BASE}/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goal }),
+      });
+
+      if (!resp.ok) {
+        addLine("error", "✖", `HTTP ${resp.status}: ${resp.statusText}`);
+        setRunning(false);
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop(); // keep incomplete chunk
+
+        for (const part of parts) {
+          if (!part.startsWith("data: ")) continue;
+          const raw = part.slice(6).trim();
+          if (!raw) continue;
+
+          let evt;
+          try { evt = JSON.parse(raw); } catch { continue; }
+
+          if (evt.type === "tool_call") {
+            const argsStr = JSON.stringify(evt.args).slice(0, 120);
+            addLine("tool", "⚙", `<span class="tag call">CALL</span>${escape(evt.tool)} <span style="color:#666">${escape(argsStr)}</span>`);
+
+          } else if (evt.type === "tool_result") {
+            const preview = evt.content.slice(0, 200) + (evt.content.length > 200 ? "…" : "");
+            addLine("result", "←", `<span class="tag result">RESULT</span>${escape(preview)}`);
+
+          } else if (evt.type === "final") {
+            addLine("final", "✔", escape(evt.content));
+
+          } else if (evt.type === "error") {
+            addLine("error", "✖", escape(evt.message));
+
+          } else if (evt.type === "done") {
+            addLine("system", "#", "Agent finished.");
+          }
+        }
+      }
+
+    } catch (err) {
+      addLine("error", "✖", `Connection error: ${escape(err.message)}`);
+    }
+
+    setRunning(false);
+    input.focus();
+  }
+
+  btn.addEventListener("click", runAgent);
+  input.addEventListener("keydown", e => { if (e.key === "Enter") runAgent(); });
+
+  // Check health on load
+  fetch(`${API_BASE}/health`)
+    .then(r => r.json())
+    .then(d => addLine("system", "#", `Health check OK — ${escape(d.agent)}`))
+    .catch(() => addLine("error", "✖", "Could not reach API. Is uvicorn running?"));
+</script>
+</body>
+</html>
