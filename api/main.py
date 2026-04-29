@@ -8,7 +8,7 @@ from pydantic import BaseModel
 import json
 import asyncio
 
-from agent.graph import build_graph
+from agent.graph import agent
 
 app = FastAPI(title="Autonomous AI Agent", version="1.0.0")
 
@@ -20,7 +20,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-graph = build_graph()
+graph = agent
 
 
 class GoalRequest(BaseModel):
