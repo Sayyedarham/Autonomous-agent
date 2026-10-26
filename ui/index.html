@@ -182,6 +182,14 @@
   <button id="run-btn">RUN</button>
 </div>
 
+<div id="telemetry-panel" style="padding:12px 20px;border-top:1px solid var(--border);background:#0d0d0d;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+  <span style="color:var(--blue)">TELEMETRY</span>
+  <input id="csv-file" type="file" accept=".csv,text/csv" />
+  <select id="method"><option value="isolation_forest">Isolation Forest</option><option value="robust_zscore">Robust z-score</option></select>
+  <input id="sensors" placeholder="sensor columns (optional, comma-separated)" style="min-width:240px" />
+  <button id="analyze-btn">ANALYZE CSV</button><button id="report-btn" disabled>DOWNLOAD REPORT</button>
+</div>
+
 <script>
   // ---- Config ----
   // In dev, hit localhost. In HF Spaces, same origin.
@@ -304,6 +312,34 @@
 
   btn.addEventListener("click", runAgent);
   input.addEventListener("keydown", e => { if (e.key === "Enter") runAgent(); });
+
+  let latestAnalysis = null;
+  document.getElementById("analyze-btn").addEventListener("click", async () => {
+    const file = document.getElementById("csv-file").files[0];
+    if (!file) { addLine("error", "✖", "Select a telemetry CSV first."); return; }
+    const data = new FormData(); data.append("file", file); data.append("method", document.getElementById("method").value);
+    data.append("sensor_columns", document.getElementById("sensors").value);
+    try {
+      addLine("tool", "⚙", "Analyzing uploaded telemetry deterministically…");
+      const response = await fetch(`${API_BASE}/telemetry/analyze`, {method:"POST", body:data});
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail?.error || body.detail || "Analysis failed");
+      latestAnalysis = body.analysis;
+      const s = latestAnalysis.dataset_summary;
+      addLine("result", "←", `Rows: ${s.rows}; flagged anomalies: ${s.anomaly_count}; rate: ${(s.anomaly_rate * 100).toFixed(2)}%; features: ${latestAnalysis.selected_features.join(", ")}`);
+      if (latestAnalysis.data_quality_warnings.length) addLine("result", "←", latestAnalysis.data_quality_warnings.join(" "));
+      document.getElementById("report-btn").disabled = false;
+    } catch (error) { addLine("error", "✖", escape(error.message)); }
+  });
+  document.getElementById("report-btn").addEventListener("click", async () => {
+    if (!latestAnalysis) return;
+    try {
+      const response = await fetch(`${API_BASE}/reports`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({analysis:latestAnalysis, format:"markdown"})});
+      const body = await response.json(); if (!response.ok) throw new Error(body.detail?.error || "Report failed");
+      const link = document.createElement("a"); link.href = `${API_BASE}${body.download_url}`; link.textContent = "Download validated diagnostic report"; link.style.color = "#00ff88";
+      addLine("final", "✔", "Report generated: "); log.lastElementChild.querySelector(".body").appendChild(link);
+    } catch (error) { addLine("error", "✖", escape(error.message)); }
+  });
 
   // Check health on load
   fetch(`${API_BASE}/health`)

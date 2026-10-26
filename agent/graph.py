@@ -1,59 +1,65 @@
+"""LangGraph orchestration with explicit bounds and recoverable tool failures."""
+from __future__ import annotations
 import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from typing import Annotated
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, ToolMessage
-from langgraph.graph import StateGraph, END
+from langchain_core.messages import ToolMessage
+from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
-from typing import Annotated
 from typing_extensions import TypedDict
-
 from agent.tools import tools
 
 load_dotenv()
+MAX_GRAPH_ITERATIONS = int(os.getenv("MAX_GRAPH_ITERATIONS", "8"))
+TOOL_TIMEOUT_SECONDS = float(os.getenv("TOOL_TIMEOUT_SECONDS", "20"))
 
-# --- State definition ---
-class AgentState(TypedDict):
+class AgentState(TypedDict, total=False):
     messages: Annotated[list, add_messages]
+    iterations: int
+    terminal_error: str | None
 
-# --- LLM setup ---
-llm = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+llm = ChatGroq(model=os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"), temperature=0)
 llm_with_tools = llm.bind_tools(tools)
 
-# --- Node 1: Reasoning ---
 def reason(state: AgentState):
-    response = llm_with_tools.invoke(state["messages"])
-    return {"messages": [response]}
+    if state.get("iterations", 0) >= MAX_GRAPH_ITERATIONS:
+        return {"messages": [], "terminal_error": f"Maximum graph iterations ({MAX_GRAPH_ITERATIONS}) reached."}
+    try:
+        return {"messages": [llm_with_tools.invoke(state["messages"])], "iterations": state.get("iterations", 0) + 1}
+    except Exception as exc:
+        return {"messages": [], "terminal_error": f"Model invocation failed: {type(exc).__name__}: {exc}"}
 
-# --- Node 2: Tool execution ---
 def run_tools(state: AgentState):
-    tool_map = {t.name: t for t in tools}
+    tool_map = {item.name: item for item in tools}
     last_message = state["messages"][-1]
     results = []
-    for call in last_message.tool_calls:
-        tool_name = call["name"]
-        tool_args = call["args"]
-        print(f"\n>> Calling tool: {tool_name} with args: {tool_args}")
-        result = tool_map[tool_name].invoke(tool_args)
-        results.append(
-            ToolMessage(content=str(result), tool_call_id=call["id"])
-        )
+    for call in getattr(last_message, "tool_calls", []):
+        name, args = call.get("name"), call.get("args", {})
+        if name not in tool_map:
+            content = f"Tool error: unknown tool '{name}'."
+        else:
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    content = str(executor.submit(tool_map[name].invoke, args).result(timeout=TOOL_TIMEOUT_SECONDS))
+            except TimeoutError:
+                content = f"Tool error: '{name}' timed out after {TOOL_TIMEOUT_SECONDS} seconds."
+            except Exception as exc:
+                content = f"Tool error: {type(exc).__name__}: {exc}"
+        results.append(ToolMessage(content=content, tool_call_id=call["id"], name=name))
     return {"messages": results}
 
-# --- Conditional edge: keep looping or stop ---
 def should_continue(state: AgentState):
-    last_message = state["messages"][-1]
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        return "tools"
-    return END
+    if state.get("terminal_error"):
+        return END
+    last = state["messages"][-1]
+    return "tools" if getattr(last, "tool_calls", None) else END
 
-# --- Build the graph ---
-graph_builder = StateGraph(AgentState)
-
-graph_builder.add_node("reason", reason)
-graph_builder.add_node("tools", run_tools)
-
-graph_builder.set_entry_point("reason")
-graph_builder.add_conditional_edges("reason", should_continue)
-graph_builder.add_edge("tools", "reason")
-
-agent = graph_builder.compile()
+builder = StateGraph(AgentState)
+builder.add_node("reason", reason)
+builder.add_node("tools", run_tools)
+builder.set_entry_point("reason")
+builder.add_conditional_edges("reason", should_continue)
+builder.add_edge("tools", "reason")
+agent = builder.compile()
